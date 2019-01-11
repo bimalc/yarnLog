@@ -1,0 +1,137 @@
+#!/usr/bin/python
+import subprocess
+from subprocess import Popen, PIPE
+import sys, json, re
+from pprint import pprint;
+import argparse
+
+# Global buffer to append the extracted values from json
+tmpbuf = []
+
+# Extract a matching pattern from json data
+def extract(key,value, pat):
+    t = 0
+    if(type(value)==list):
+        for i in value:
+            extract(key+"_"+str(t),i,pat)
+            t = t + 1
+        return
+
+    if(type(value)==dict):
+        for i in value.keys():
+            #print value[i]
+            if pat in i :
+               #print value[i]
+               tmpbuf.append(value[i])
+            if key:
+                key_i = key+"_"+i
+            else:
+                 key_i = i
+            extract(key_i,value[i],pat)
+        return
+
+
+
+#Parse command line option
+parser = argparse.ArgumentParser()
+parser.add_argument('--usekrb5', action='store_true', help='Use kerberos(spenego) to interact with RM and NM usekrb if kerberos is enabled for the web interface')
+parser.add_argument('--spark', action='store_true', help='Optionali flag to tell it is spark application. This avoid getting syslog if it is a spark application else an Exception message gets logged for not able to fetch syslog file as there is no syslog file on disk')
+parser.add_argument('appid', type=str, help='Provide the application id')
+parser.add_argument('rmweburl', type=str, help='The url for the active RM')
+parser.add_argument('-o', '--outputfile', type=str, help='The output file to write logs. If not specified the logs will be written to stdout')
+args = parser.parse_args()
+
+if args.appid != '':
+    m = re.search('_[0-9]{13}_[0-9]{4}',args.appid)
+    if m:
+        appPattern = m.group(0)
+    else:
+        parser.error("Provide a valid application id")
+else:
+   parser.error("Specify the appid \n Usage : yarnlogs appid [--usekrb5]")
+
+if args.rmweburl != '':
+    m = re.search('http(s)?:\/\/.*:[0-9]{1,8}',args.rmweburl)
+    if m:
+        rmweburl = m.group(0)
+    else:
+        parser.error("Provide a valid RM web URL")
+else:
+   parser.error("Specify the rm WEB url \n Usage : yarnlogs appid [--usekrb5]")
+
+if (args.usekrb5 ):
+   krbOptions ="--negotiate -u : "
+
+print args.outputfile
+
+rmRestApi=rmweburl+'/ws/v1/cluster/nodes'
+
+if (args.usekrb5):
+    # Right now curl will just try to access as the user logged in
+    # We can add feature to provide a user name password at command line
+    res = subprocess.check_output(["curl",  "-ks", "--negotiate", "-u", ":", rmRestApi] )
+else:
+    res = subprocess.check_output(["curl",  "-ks", rmRestApi] )
+
+data=json.loads(res)
+d=dict(data)
+
+# extract the value for all nodeHTTPAddress for all NM nodes.
+extract(None,d,"nodeHTTPAddress")
+
+#print "MyArray"
+#pprint(tmpbuf)
+savedList=tmpbuf
+tmpbuf = []
+
+#
+# For each Node manager look for all the coniners
+# As an improvement we can look only at nodes with containers
+# from this application. For now we just get allcontainers and shortlis
+# the one we want.
+#
+for x in savedList:
+   if( x != '') :
+       url = 'https://' + x + '/ws/v1/node/containers'
+       print url
+       res = subprocess.check_output(["curl",  "-ks", url])
+       data=json.loads(res)
+       d=dict(data)
+       extract(None,d,"containerLogsLink")
+savedList=tmpbuf
+tmpbuf = []
+
+f=sys.stdout
+
+if (args.outputfile != None):
+    f = open(args.outputfile, "w")
+
+def download(url, f, type):
+    f.write("\n"+type+"\n")
+    f.flush()
+    p1 = subprocess.Popen(["curl",  "-ks", url ], stdout=PIPE)
+    # Getting rid of the HTML stuff passed along with the logs, some are just hardcoded sentences
+    # not a good way but solving the purpose for now
+    p2 = subprocess.Popen(["grep", "-v",  "-E", "^\s*<|^\s*#|^\s*This page works best with javascript enabled|.*ui-progressbar.*|^\s*\$\(function\(\)|.*nav.*accordion|.*jsnotice.*|^\s*Tools\s*$|^\s*ResourceManager\s*$|^\s*\}\)\;\s*$|^\s*NodeManager\s*$|^\s*Logged in as: dr.who\s*$|^\s*java.lang.Exception: Cannot find this log on the local disk.\s*$"], stdin=p1.stdout, stdout=f)
+    p1.wait()
+    p2.wait()
+    f.flush()
+    return
+
+for x in savedList:
+    if( x != '') :
+        if appPattern in x:
+             if(args.spark):
+                url1=x+'/container-localizer-syslog/?start=0'
+             else:
+                url1 = x+'/syslog/?start=0'
+             url2 = x+'/stdout/?start=0'
+             url3 = x+'/stderr/?start=0'
+             print "Download " + url1
+             f.write("\n"+url1+"\n")
+             f.write("=============================================================================\n")
+             f.flush()
+
+             download(url1,f, "Syslog")
+             download(url2,f, "Stderr")
+             download(url3,f, "Stdout")
