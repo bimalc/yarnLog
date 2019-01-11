@@ -9,7 +9,7 @@ This utility script uses the RM REST API approach to first figure out the nodes 
 usage: logAggregate.py [-h] [--usekrb] [--spark] appid rmweburl [-o outputfile]
 
 Example:- 
-#./collectyarnlog.py  application_1544005654695_0002 https://nightly513-2.vpc.cloudera.com:8090/ -o application_1544005654695_0002.txt
+#./collectyarnlog.py  application_1544005654695_0002 https://ActiveRMHost:8090/ -o application_1544005654695_0002.txt
   
   
 ./containerlog.py  -h
